@@ -100,12 +100,16 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           name: 'APPLICATIONINSIGHTS_AUTHENTICATION_STRING'
           value: 'Authorization=AAD'
         }
+        {
+          name: 'AzureWebJobsStorage__accountName'
+          value: storageAccountName
+        }
 
         // Common package behavior
-        {
-          name: 'WEBSITE_RUN_FROM_PACKAGE'
-          value: '1'
-        }
+        // {
+        //   name: 'WEBSITE_RUN_FROM_PACKAGE'
+        //   value: '1'
+        // }
       ]
     }
   }, json('{ "functionAppConfig": {} }'), {
