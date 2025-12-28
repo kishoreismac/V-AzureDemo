@@ -1,0 +1,61 @@
+name: Deploy Function Code (Python)
+
+on:
+  workflow_run:
+    workflows: [ "Deploy Infra (Bicep)" ]
+    types: [ completed ]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  # Change if your function code is not in repo root
+  FUNCTIONAPP_PACKAGE_PATH: "."
+  PYTHON_VERSION: "3.11"
+
+  # ✅ Set your function app name here (or move to GitHub Variables/Environments)
+  AZURE_FUNCTIONAPP_NAME: "v-sample-python"
+
+jobs:
+  deploy:
+    # Only run if infra workflow succeeded (and this trigger is workflow_run)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies into .python_packages
+        shell: bash
+        run: |
+          set -e
+          cd "${FUNCTIONAPP_PACKAGE_PATH}"
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt --target=".python_packages/lib/site-packages"
+          else
+            echo "No requirements.txt found. Skipping."
+          fi
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure Functions
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
+          package: ${{ env.FUNCTIONAPP_PACKAGE_PATH }}
+          scm-do-build-during-deployment: true
+          enable-oryx-build: true

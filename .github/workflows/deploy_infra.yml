@@ -1,0 +1,56 @@
+name: Deploy Infra (Bicep)
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "infra/**"
+      - ".github/workflows/deploy-infra.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AZURE_LOCATION: eastus
+  DEPLOYMENT_NAME: func-flex-dev
+
+jobs:
+  deploy-infra:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Compile check
+        shell: bash
+        run: |
+          az bicep build --file infra/main.bicep
+
+      - name: What-if (Subscription scope)
+        shell: bash
+        run: |
+          az deployment sub what-if \
+            --name "${DEPLOYMENT_NAME}" \
+            --location "${AZURE_LOCATION}" \
+            --template-file "infra/main.bicep" \
+            --parameters "infra/main.bicepparam"
+
+      - name: Deploy (Subscription scope)
+        shell: bash
+        run: |
+          az deployment sub create \
+            --name "${DEPLOYMENT_NAME}" \
+            --location "${AZURE_LOCATION}" \
+            --template-file "infra/main.bicep" \
+            --parameters "infra/main.bicepparam" \
+            --only-show-errors
