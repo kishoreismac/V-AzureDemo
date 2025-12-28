@@ -32,11 +32,8 @@ param maximumInstanceCount int = 100
 @allowed([512,2048,4096])
 param instanceMemoryMB int = 2048
 
-// IMPORTANT for Flex:
-// - Do NOT set siteConfig.linuxFxVersion
-// - Runtime must come from properties.functionAppConfig.runtime
-// - functionAppConfig is required on create for FC1, but Bicep type schema may not include it
-//   => inject it using json() to bypass schema validation.
+// Flex requires functionAppConfig on CREATE.
+// Flex also rejects siteConfig.linuxFxVersion, so do NOT set it.
 
 var functionAppConfigPayload = {
   deployment: {
@@ -58,7 +55,7 @@ var functionAppConfigPayload = {
   }
 }
 
-resource functionApp 'Microsoft.Web/sites@2022-09-01' = {
+resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   name: functionAppName
   location: location
   kind: 'functionapp,linux'
@@ -66,11 +63,13 @@ resource functionApp 'Microsoft.Web/sites@2022-09-01' = {
   identity: {
     type: 'SystemAssigned'
   }
+
+  // Use union()+json() to bypass any Bicep type-definition gaps around functionAppConfig.
   properties: union({
     serverFarmId: serverFarmResourceId
     httpsOnly: true
 
-    // siteConfig is still allowed, but MUST NOT include linuxFxVersion for Flex
+    // DO NOT include linuxFxVersion for Flex
     siteConfig: {
       alwaysOn: false
       appSettings: [
@@ -110,7 +109,6 @@ resource functionApp 'Microsoft.Web/sites@2022-09-01' = {
       ]
     }
   }, json('{ "functionAppConfig": {} }'), {
-    // Inject real functionAppConfig (bypasses Bicep schema limits)
     functionAppConfig: functionAppConfigPayload
   })
 }
