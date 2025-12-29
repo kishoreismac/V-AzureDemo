@@ -4,4 +4,4 @@
 
 azure-functions
 pytest
-requests==2.19.1
+requests==2.32.4
