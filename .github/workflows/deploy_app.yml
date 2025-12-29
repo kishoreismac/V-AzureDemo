@@ -1,49 +1,36 @@
-name: Deploy Function Code (Python)
+name: Deploy Function App Code
 
 on:
   workflow_run:
-    workflows: [ "Deploy Infra (Bicep)" ]
+    workflows: [ "Unit Tests (Python Function)" ]
     types: [ completed ]
-  workflow_dispatch:
 
 permissions:
   id-token: write
   contents: read
 
 env:
-  # Change if your function code is not in repo root
-  FUNCTIONAPP_PACKAGE_PATH: "."
+  AZURE_FUNCTIONAPP_NAME: v-sample-python
+  AZURE_RESOURCE_GROUP: rg-vsamplepython
   PYTHON_VERSION: "3.11"
-
-  # ✅ Set your function app name here (or move to GitHub Variables/Environments)
-  AZURE_FUNCTIONAPP_NAME: "v-sample-python"
 
 jobs:
   deploy:
-    # Only run if infra workflow succeeded (and this trigger is workflow_run)
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install dependencies into .python_packages
-        shell: bash
+      - name: Package dependencies
         run: |
-          set -e
-          cd "${FUNCTIONAPP_PACKAGE_PATH}"
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt --target=".python_packages/lib/site-packages"
-          else
-            echo "No requirements.txt found. Skipping."
-          fi
+          pip install -r requirements.txt --target=".python_packages/lib/site-packages"
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -52,10 +39,17 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Remove unsupported Flex settings
+        run: |
+          az webapp config appsettings delete \
+            --name $AZURE_FUNCTIONAPP_NAME \
+            --resource-group $AZURE_RESOURCE_GROUP \
+            --setting-names WEBSITE_RUN_FROM_PACKAGE || true
+
       - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
         with:
           app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
-          package: ${{ env.FUNCTIONAPP_PACKAGE_PATH }}
+          package: .
           scm-do-build-during-deployment: true
           enable-oryx-build: true
