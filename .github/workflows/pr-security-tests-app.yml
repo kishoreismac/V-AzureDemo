@@ -143,51 +143,51 @@ jobs:
                   
                   # Create SARIF file
                   cat > create_sarif.py << 'EOF'
-import json
-import sys
+                  import json
+                  import sys
 
-try:
-    with open('pip-audit.json', 'r') as f:
-        data = json.load(f)
-    
-    sarif = {
-        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
-        "version": "2.1.0",
-        "runs": [{
-            "tool": {
-                "driver": {
-                    "name": "pip-audit",
-                    "informationUri": "https://pypi.org/project/pip-audit/"
-                }
-            },
-            "results": []
-        }]
-    }
-    
-    for vuln in data.get('vulnerabilities', []):
-        sarif["runs"][0]["results"].append({
-            "ruleId": vuln.get('id', 'Unknown'),
-            "level": "error",
-            "message": {
-                "text": f"{vuln.get('name', 'Unknown')} {vuln.get('installed_version', '')}: {vuln.get('description', 'Vulnerability found')}"
-            },
-            "locations": [{
-                "physicalLocation": {
-                    "artifactLocation": {
-                        "uri": "requirements.txt"
-                    }
-                }
-            }]
-        })
-    
-    with open('pip-audit.sarif', 'w') as f:
-        json.dump(sarif, f, indent=2)
-    
-    print("SARIF file created successfully")
-except Exception as e:
-    print(f"Error creating SARIF: {e}")
-    sys.exit(1)
-EOF
+                  try:
+                      with open('pip-audit.json', 'r') as f:
+                          data = json.load(f)
+                      
+                      sarif = {
+                          "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+                          "version": "2.1.0",
+                          "runs": [{
+                              "tool": {
+                                  "driver": {
+                                      "name": "pip-audit",
+                                      "informationUri": "https://pypi.org/project/pip-audit/"
+                                  }
+                              },
+                              "results": []
+                          }]
+                      }
+                      
+                      for vuln in data.get('vulnerabilities', []):
+                          sarif["runs"][0]["results"].append({
+                              "ruleId": vuln.get('id', 'Unknown'),
+                              "level": "error",
+                              "message": {
+                                  "text": f"{vuln.get('name', 'Unknown')} {vuln.get('installed_version', '')}: {vuln.get('description', 'Vulnerability found')}"
+                              },
+                              "locations": [{
+                                  "physicalLocation": {
+                                      "artifactLocation": {
+                                          "uri": "requirements.txt"
+                                      }
+                                  }
+                              }]
+                          })
+                      
+                      with open('pip-audit.sarif', 'w') as f:
+                          json.dump(sarif, f, indent=2)
+                      
+                      print("SARIF file created successfully")
+                  except Exception as e:
+                      print(f"Error creating SARIF: {e}")
+                      sys.exit(1)
+                  EOF
                   python create_sarif.py
                   
                 else
