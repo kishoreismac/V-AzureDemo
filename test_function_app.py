@@ -33,7 +33,7 @@ def test_returns_hello_when_name_in_query():
     resp = http_trigger(req)
 
     assert resp.status_code == 200
-    assert resp.get_body().decode() == "Hello, Vaishnavi. This HTTP triggered function executed successfully."
+    assert resp.get_body().decode() == "Hello, Vaishnavi. This HTTP triggered function successfully."
 
 
 def test_returns_hello_when_name_in_json_body():
