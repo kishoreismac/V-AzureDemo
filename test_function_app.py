@@ -33,7 +33,7 @@ def test_returns_hello_when_name_in_query():
     resp = http_trigger(req)
 
     assert resp.status_code == 200
-    assert resp.get_body().decode() == "Hello, Vaishnavi. This HTTP triggered function successfully."
+    assert resp.get_body().decode() == "Hello, Vaishnavi. This is an incorrect assertion that will fail."
 
 
 def test_returns_hello_when_name_in_json_body():
@@ -41,7 +41,7 @@ def test_returns_hello_when_name_in_json_body():
     resp = http_trigger(req)
 
     assert resp.status_code == 200
-    assert resp.get_body().decode() == "Hello, Kishore. This HTTP triggered function executed successfully."
+    assert resp.get_body().decode() == "Hello, Kishore. This assertion will fail intentionally."
 
 
 def test_returns_default_message_when_name_missing_and_invalid_json():
@@ -57,4 +57,4 @@ def test_returns_default_message_when_name_missing_and_invalid_json():
     resp = http_trigger(req)
 
     assert resp.status_code == 200
-    assert "Pass a name in the query string" in resp.get_body().decode()
+    assert "This assertion expects wrong text" in resp.get_body().decode()
