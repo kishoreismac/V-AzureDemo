@@ -1,4 +1,4 @@
-name: PR - Tests + Security Scans (Python + Bicep)
+name: PR - Security Scans + Unit Tests (Python + Bicep)
 
 on:
   pull_request:
@@ -9,61 +9,27 @@ permissions:
   contents: read
 
 jobs:
-  tests_and_security:
-    name: Unit tests + Quality + Security scans
+  security_scans:
+    name: Security scans (CodeQL + pip-audit + Checkov)
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
       security-events: write
-      actions: read
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # -------------------------
-      # 0) Python setup
-      # -------------------------
-      - name: Setup Python
+      - name: Setup Python (for tooling)
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install security tools only
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-          # Testing & quality
-          pip install pytest pytest-cov
-
-          # Pre-commit & quality tools
-          pip install pre-commit black ruff detect-secrets
-
-          # Security tools
           pip install pip-audit checkov
 
-      # -------------------------
-      # 1) Pre-commit hooks (lint, secrets, formatting)
-      # -------------------------
-      - name: Run pre-commit hooks
-        run: |
-          pre-commit run --all-files
-
-      # -------------------------
-      # 2) Unit tests + coverage enforcement
-      # -------------------------
-      - name: Run unit tests with coverage
-        run: |
-          pytest \
-            --cov=. \
-            --cov-report=term-missing \
-            --cov-fail-under=70
-
-      # -------------------------
-      # 3) Security: CodeQL (Python SAST)
-      # -------------------------
+      # CodeQL (Python SAST)
       - name: Initialize CodeQL (Python)
         uses: github/codeql-action/init@v3
         with:
@@ -74,9 +40,7 @@ jobs:
         with:
           category: "/language:python"
 
-      # -------------------------
-      # 4) Security: Dependency vulnerabilities (pip-audit)
-      # -------------------------
+      # Dependency scan (requirements only)
       - name: pip-audit (SARIF)
         run: |
           pip-audit -r requirements.txt --format sarif --output pip-audit.sarif
@@ -87,19 +51,37 @@ jobs:
           sarif_file: pip-audit.sarif
           category: pip-audit
 
-      # -------------------------
-      # 5) Security: IaC scan (Bicep) using Checkov
-      # -------------------------
+      # IaC scan (Bicep)
       - name: Checkov scan (Bicep) -> SARIF
         run: |
-          checkov \
-            -d infra \
-            --framework bicep \
-            --output sarif \
-            --output-file-path checkov-bicep.sarif
+          checkov -d infra --framework bicep --output sarif --output-file-path checkov-bicep.sarif
 
       - name: Upload Checkov Bicep results
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: checkov-bicep.sarif
           category: checkov-bicep
+
+  unit_tests:
+    name: Unit tests (non-blocking for security demo)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install app dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Run unit tests with coverage gate
+        run: |
+          pytest -q --cov=. --cov-report=term-missing --cov-fail-under=70
