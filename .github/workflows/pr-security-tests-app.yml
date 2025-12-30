@@ -54,123 +54,102 @@ jobs:
 
       - name: 🐍 Bandit SAST Scan
         run: |
-          bandit -r . -f json -o bandit-results.json || true
+          bandit -r . -f json -o bandit-results.json 2>/dev/null || echo "Bandit scan completed"
         continue-on-error: true
 
       # 2. DEPENDENCY SECURITY ANALYSIS
-      - name: 📋 Analyze Dependencies
-        id: deps-check
+      - name: 📋 Check for Unpinned Dependencies
+        id: check-deps
         run: |
           echo "# 📦 Dependency Security Report" > $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Create a Python script for analysis
-          cat > analyze_deps.py << 'EOF'
-import re
+          # Check for unpinned packages using simple bash
+          UNPINNED_COUNT=0
+          UNPINNED_LIST=""
+          
+          if [ -f "requirements.txt" ]; then
+            while IFS= read -r line; do
+              line_clean=$(echo "$line" | xargs)
+              if [[ -n "$line_clean" ]] && [[ ! "$line_clean" =~ ^# ]]; then
+                if [[ ! "$line_clean" =~ == ]] && [[ ! "$line_clean" =~ \>= ]] && [[ ! "$line_clean" =~ \<= ]]; then
+                  ((UNPINNED_COUNT++))
+                  PKG_NAME=$(echo "$line_clean" | awk '{print $1}')
+                  UNPINNED_LIST+="- **$PKG_NAME** - ⚠️ Not version pinned"$'\n'
+                fi
+              fi
+            done < requirements.txt
+          fi
+          
+          if [ $UNPINNED_COUNT -gt 0 ]; then
+            echo "## 🔍 Unpinned Dependencies Analysis" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ❌ **$UNPINNED_COUNT Unpinned Package(s) Found**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "$UNPINNED_LIST" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Security Impact:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Automatic updates could introduce vulnerable versions" >> $GITHUB_STEP_SUMMARY
+            echo "- Inconsistent builds across environments" >> $GITHUB_STEP_SUMMARY
+            echo "- Difficulty reproducing issues" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Recommended Action:**" >> $GITHUB_STEP_SUMMARY
+            echo '```bash' >> $GITHUB_STEP_SUMMARY
+            echo '# Generate pinned requirements:' >> $GITHUB_STEP_SUMMARY
+            echo 'pip install -r requirements.txt' >> $GITHUB_STEP_SUMMARY
+            echo 'pip freeze > requirements.txt' >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## 🔍 Unpinned Dependencies Analysis" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ✅ **All Dependencies Are Properly Pinned**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Good practice: Dependencies are locked to specific versions." >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "UNPINNED_COUNT=$UNPINNED_COUNT" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: 🔐 Run Vulnerability Scan
+        id: vuln-scan
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔐 Vulnerability Scan (pip-audit)" >> $GITHUB_STEP_SUMMARY
+          
+          # Try to install and scan
+          VULN_COUNT=0
+          
+          if [ -f "requirements.txt" ]; then
+            # Install packages first
+            pip install -r requirements.txt 2>/dev/null || true
+            
+            # Run pip-audit
+            if pip-audit --format json --output pip-audit.json 2>/dev/null; then
+              if [ -f "pip-audit.json" ]; then
+                VULN_COUNT=$(jq '.vulnerabilities | length' pip-audit.json 2>/dev/null || echo "0")
+                
+                if [ "$VULN_COUNT" -gt 0 ] 2>/dev/null && [ "$VULN_COUNT" != "null" ]; then
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "### 🚨 **$VULN_COUNT Vulnerability(ies) Found**" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  
+                  # Show first 5 vulnerabilities
+                  jq -r '.vulnerabilities[0:5][] | "- **\(.name) \(.installed_version)**: \(.description // "No description") [CVE: \(.id)]"' pip-audit.json 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "Could not parse vulnerability details" >> $GITHUB_STEP_SUMMARY
+                  
+                  if [ "$VULN_COUNT" -gt 5 ]; then
+                    echo "" >> $GITHUB_STEP_SUMMARY
+                    echo "*... and $((VULN_COUNT - 5)) more. Check the Security tab for full details.*" >> $GITHUB_STEP_SUMMARY
+                  fi
+                  
+                  # Create SARIF file
+                  cat > create_sarif.py << 'EOF'
 import json
-import subprocess
 import sys
 
-def check_unpinned_packages():
-    unpinned = []
-    try:
-        with open('requirements.txt', 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    # Check if package is pinned
-                    if not ('==' in line or '>=' in line or '<=' in line or '~=' in line):
-                        unpinned.append(line)
-    except FileNotFoundError:
-        print("No requirements.txt found")
-        return []
+try:
+    with open('pip-audit.json', 'r') as f:
+        data = json.load(f)
     
-    return unpinned
-
-def run_vulnerability_scan():
-    try:
-        # Install packages first
-        subprocess.run(['pip', 'install', '-r', 'requirements.txt'], 
-                      capture_output=True, text=True)
-        
-        # Run pip-audit
-        result = subprocess.run(['pip-audit', '--format', 'json', '--output', 'pip-audit.json'],
-                              capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            with open('pip-audit.json', 'r') as f:
-                data = json.load(f)
-            return data.get('vulnerabilities', [])
-    except Exception as e:
-        print(f"Error in vulnerability scan: {e}")
-    
-    return None
-
-def main():
-    print("## 🔍 Unpinned Dependencies Analysis")
-    unpinned = check_unpinned_packages()
-    
-    if unpinned:
-        print(f"### ❌ **{len(unpinned)} Unpinned Package(s) Found**")
-        print("")
-        for pkg in unpinned:
-            print(f"- **{pkg}** - ⚠️ Not version pinned")
-        print("")
-        print("**Security Impact:**")
-        print("- Automatic updates could introduce vulnerable versions")
-        print("- Inconsistent builds across environments")
-        print("- Difficulty reproducing issues")
-        print("")
-        print("**Recommended Action:**")
-        print("```bash")
-        print("# Generate pinned requirements:")
-        print("pip install -r requirements.txt")
-        print("pip freeze > requirements.txt")
-        print("```")
-    else:
-        print("### ✅ **All Dependencies Are Properly Pinned**")
-        print("")
-        print("Good practice: Dependencies are locked to specific versions.")
-    
-    print("")
-    print("## 🔐 Vulnerability Scan (pip-audit)")
-    
-    vulns = run_vulnerability_scan()
-    if vulns is not None:
-        if vulns:
-            print(f"### 🚨 **{len(vulns)} Vulnerability(ies) Found**")
-            print("")
-            for vuln in vulns:
-                name = vuln.get('name', 'Unknown')
-                version = vuln.get('installed_version', '')
-                desc = vuln.get('description', 'No description')
-                cve = vuln.get('id', 'Unknown')
-                print(f"- **{name} {version}**: {desc} [CVE: {cve}]")
-            
-            # Create SARIF output
-            create_sarif(vulns)
-        else:
-            print("### ✅ **No Vulnerabilities Found**")
-            print("")
-            print("All scanned packages are free of known vulnerabilities.")
-    else:
-        print("### ⚠️ **Vulnerability Scan Incomplete**")
-        print("")
-        print("Could not complete vulnerability scan.")
-        print("")
-        print("**Fix unpinned packages first for complete security scan.**")
-    
-    print("")
-    print("## 📊 Summary")
-    print(f"- **Unpinned Dependencies:** {len(unpinned)}")
-    print(f"- **Vulnerabilities Found:** {len(vulns) if vulns else 'Unknown'}")
-    
-    # Set outputs
-    with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
-        fh.write(f'UNPINNED_COUNT={len(unpinned)}\n')
-        fh.write(f'VULN_COUNT={len(vulns) if vulns else 0}\n')
-
-def create_sarif(vulns):
     sarif = {
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
         "version": "2.1.0",
@@ -178,15 +157,14 @@ def create_sarif(vulns):
             "tool": {
                 "driver": {
                     "name": "pip-audit",
-                    "informationUri": "https://pypi.org/project/pip-audit/",
-                    "version": "2.0+"
+                    "informationUri": "https://pypi.org/project/pip-audit/"
                 }
             },
             "results": []
         }]
     }
     
-    for vuln in vulns:
+    for vuln in data.get('vulnerabilities', []):
         sarif["runs"][0]["results"].append({
             "ruleId": vuln.get('id', 'Unknown'),
             "level": "error",
@@ -204,16 +182,38 @@ def create_sarif(vulns):
     
     with open('pip-audit.sarif', 'w') as f:
         json.dump(sarif, f, indent=2)
-
-if __name__ == "__main__":
-    main()
+    
+    print("SARIF file created successfully")
+except Exception as e:
+    print(f"Error creating SARIF: {e}")
+    sys.exit(1)
 EOF
+                  python create_sarif.py
+                  
+                else
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "### ✅ **No Vulnerabilities Found**" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "All scanned packages are free of known vulnerabilities." >> $GITHUB_STEP_SUMMARY
+                fi
+              fi
+            else
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### ⚠️ **Vulnerability Scan Incomplete**" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Could not complete vulnerability scan." >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ℹ️ **No requirements.txt found**" >> $GITHUB_STEP_SUMMARY
+          fi
           
-          python analyze_deps.py >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Unpinned Dependencies:** ${{ steps.check-deps.outputs.UNPINNED_COUNT }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Vulnerabilities Found:** $VULN_COUNT" >> $GITHUB_STEP_SUMMARY
           
-          # Ensure outputs are set even if script fails
-          echo "UNPINNED_COUNT=${UNPINNED_COUNT:-0}" >> $GITHUB_OUTPUT
-          echo "VULN_COUNT=${VULN_COUNT:-0}" >> $GITHUB_OUTPUT
+          echo "VULN_COUNT=$VULN_COUNT" >> $GITHUB_OUTPUT
         continue-on-error: true
 
       - name: 📤 Upload pip-audit Results
@@ -233,10 +233,28 @@ EOF
       # 3. INFRASTRUCTURE SCAN
       - name: 🏗️ IaC Security Scan
         run: |
-          if [ -d "infra" ] || find . -name "*.bicep" -print -quit | grep -q .; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🏗️ Infrastructure Security Scan" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -d "infra" ] || find . -name "*.bicep" -type f | head -1 | grep -q "."; then
             checkov -d . --framework bicep --output sarif --output-file-path checkov-bicep.sarif --quiet || true
+            
+            if [ -f "checkov-bicep.sarif" ]; then
+              CHECK_COUNT=$(jq '.runs[0].results | length' checkov-bicep.sarif 2>/dev/null || echo "0")
+              
+              if [ "$CHECK_COUNT" -gt 0 ] 2>/dev/null; then
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "### ⚠️ **$CHECK_COUNT IaC Finding(s)**" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "Check the Security tab for detailed findings." >> $GITHUB_STEP_SUMMARY
+              else
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "### ✅ **No IaC Security Issues Found**" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
           else
-            echo "No IaC files found to scan"
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ℹ️ **No IaC Files Found to Scan**" >> $GITHUB_STEP_SUMMARY
           fi
         continue-on-error: true
 
@@ -270,7 +288,32 @@ EOF
 
       - name: 🧪 Run Tests
         run: |
-          pytest --cov=. --cov-report=xml --junitxml=junit.xml -v || exit 1
+          echo "## 🧪 Test Results" > $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if pytest --cov=. --cov-report=xml --cov-report=term-missing --junitxml=junit.xml -v; then
+            echo "### ✅ **All Tests Passed**" >> $GITHUB_STEP_SUMMARY
+            
+            # Get coverage percentage
+            if [ -f "coverage.xml" ]; then
+              COVERAGE=$(grep -o 'line-rate="[^"]*"' coverage.xml | cut -d'"' -f2)
+              if [ ! -z "$COVERAGE" ]; then
+                COVERAGE_PCT=$(echo "$COVERAGE * 100" | bc -l | xargs printf "%.1f")
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "**Coverage: ${COVERAGE_PCT}%**" >> $GITHUB_STEP_SUMMARY
+                
+                if (( $(echo "$COVERAGE_PCT < 70" | bc -l) )); then
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "⚠️ **Low coverage detected (< 70%). Consider adding more tests.**" >> $GITHUB_STEP_SUMMARY
+                fi
+              fi
+            fi
+          else
+            echo "### ❌ **Tests Failed**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Check test output for details." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
 
       - name: 📊 Upload Test Results
         if: always()
@@ -280,3 +323,62 @@ EOF
           path: |
             junit.xml
             coverage.xml
+
+  post_security_review:
+    name: 📋 Security Review Summary
+    runs-on: ubuntu-latest
+    needs: [security_scans, unit_tests]
+    if: always()
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: 📝 Create Security Review Comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const summary = `
+            ## 🔒 Security Review Summary
+
+            ### 📋 Scan Results
+            Security scans have completed for this PR. Here's what we found:
+
+            #### ⚠️ **Attention Needed:**
+            - **Unpinned Dependencies**: ${{ needs.security_scans.outputs.UNPINNED_COUNT || 0 }} package(s) not version-locked
+            - **Vulnerabilities**: ${{ needs.security_scans.outputs.VULN_COUNT || 0 }} CVE(s) detected
+            - **Risk**: Unpinned packages could automatically pull vulnerable versions
+
+            #### ✅ **Completed Scans:**
+            1. **SAST (CodeQL)**: Static application security testing
+            2. **Dependency Analysis**: Version pinning check
+            3. **Vulnerability Scan**: CVE detection
+            4. **IaC Security**: Bicep template validation
+            5. **Unit Tests**: Code quality and coverage
+
+            ### 🛠️ **Recommended Actions:**
+            \`\`\`bash
+            # Fix unpinned dependencies:
+            pip install -r requirements.txt
+            pip freeze > requirements.txt
+            
+            # Review security findings in:
+            # 1. GitHub Security tab
+            # 2. Workflow run summary
+            \`\`\`
+
+            ### 📊 **Next Steps:**
+            - [ ] Review security findings in the Security tab
+            - [ ] Fix unpinned dependencies in requirements.txt
+            - [ ] Address critical vulnerabilities
+            - [ ] Approve merge once security issues are resolved
+
+            *🔍 For detailed findings, check the "Security" tab and workflow run summary.*
+            `;
+            
+            // Post comment on PR
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: summary
+            });
