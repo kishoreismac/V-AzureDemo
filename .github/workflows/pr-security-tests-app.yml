@@ -50,7 +50,7 @@ jobs:
       # Dependency scan (requirements only)
       - name: pip-audit (JSON)
         run: |
-          pip-audit -r requirements.txt --format json --output pip-audit.json
+          pip-audit -r requirements.txt --disable-pip -f json -o pip-audit.json
 
       - name: Upload pip-audit results
         uses: github/codeql-action/upload-sarif@v3
