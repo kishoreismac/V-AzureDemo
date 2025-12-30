@@ -1,0 +1,77 @@
+name: PR - Infra Security Checks (Bicep)
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "infra/**/*.bicep"
+      - ".github/workflows/pr-security-tests-infra.yml"
+
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  infra_security:
+    name: Bicep IaC security + quality
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -------------------------
+      # 1) Install security tools
+      # -------------------------
+      - name: Setup Python (for tools)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Checkov
+        run: |
+          python -m pip install --upgrade pip
+          pip install checkov
+
+      # -------------------------
+      # 2) IaC security scan (Bicep) -> SARIF (for Security tab)
+      #    - "soft_fail: false" ensures the step FAILS the job on findings
+      # -------------------------
+      - name: Checkov scan (Bicep) -> SARIF (fail on findings)
+        run: |
+          checkov \
+            -d infra \
+            --framework bicep \
+            --output sarif \
+            --output-file-path checkov-bicep.sarif \
+            --soft-fail false
+
+      - name: Upload Checkov results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov-bicep.sarif
+          category: checkov-bicep
+
+      # -------------------------
+      # 3) Bicep syntax/compile validation
+      #    This catches invalid templates early.
+      # -------------------------
+      - name: Setup Azure CLI (bicep validate)
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            az bicep version
+
+      - name: Validate Bicep compiles
+        run: |
+          mkdir -p _bicep_build
+          find infra -name "*.bicep" -print -exec az bicep build --file {} --outdir _bicep_build \;
