@@ -53,19 +53,17 @@ jobs:
       # 3) Checkov (Bicep IaC) -> SARIF upload (blocks PR on findings)
       #    - If your folder isn't "infra", change -d infra
       # -------------------------
-      - name: Checkov scan (Bicep) -> SARIF (fail on findings)
+      - name: Checkov scan (Bicep) -> SARIF
+        id: checkov
+        continue-on-error: true
         run: |
           if [ -d "infra" ]; then
-            checkov \
-              -d infra \
-              --framework bicep \
-              --output sarif \
-              --output-file-path checkov-bicep.sarif \
-              --soft-fail false
+            checkov -d infra --framework bicep -o sarif --output-file-path checkov-bicep.sarif
+            echo "checkov_exit=$?" >> $GITHUB_OUTPUT
           else
             echo "No infra folder found. Skipping Checkov."
-            # create empty SARIF so upload step doesn't fail
             python -c "import json; open('checkov-bicep.sarif','w').write(json.dumps({'version':'2.1.0','$schema':'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json','runs':[]}))"
+            echo "checkov_exit=0" >> $GITHUB_OUTPUT
           fi
 
       - name: Upload Checkov Bicep results to GitHub Security
@@ -74,6 +72,13 @@ jobs:
         with:
           sarif_file: checkov-bicep.sarif
           category: checkov-bicep
+
+      - name: Fail if Checkov found issues
+        if: steps.checkov.outputs.checkov_exit != '0'
+        run: |
+          echo "Checkov found IaC security issues. Failing the workflow."
+          exit 1
+
 
       # -------------------------
       # 4) Bandit (Python SAST) - DO NOT upload as SARIF (Bandit JSON != SARIF)
