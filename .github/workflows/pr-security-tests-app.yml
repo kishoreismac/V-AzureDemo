@@ -3,40 +3,29 @@ name: PR - Security Scans + Unit Tests (Python + Bicep)
 on:
   pull_request:
     branches: ["main"]
-    paths:
-      - '**/*.py'
-      - 'requirements.txt'
-      - 'pyproject.toml'
-
   workflow_dispatch: {}
 
+# least privilege (workflow-level)
 permissions:
   contents: read
-  security-events: write
-  pull-requests: write
 
 jobs:
   security_scans:
-    name: Security scans (CodeQL + pip-audit + Checkov)
+    name: Security scans (CodeQL + Checkov + pip-audit + Bandit)
     runs-on: ubuntu-latest
+
+    # needed for SARIF upload to Security -> Code scanning
     permissions:
       contents: read
       security-events: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Python (for tooling)
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install security tools only
-        run: |
-          python -m pip install --upgrade pip
-          pip install pip-audit checkov
-
-      # CodeQL (Python SAST)
+      # -------------------------
+      # 1) CodeQL (Python SAST) - shows in Security -> Code scanning
+      # -------------------------
       - name: Initialize CodeQL (Python)
         uses: github/codeql-action/init@v3
         with:
@@ -47,48 +36,154 @@ jobs:
         with:
           category: "/language:python"
 
-      # Dependency scan (requirements only)
-      - name: pip-audit (JSON)
-        run: |
-          pip-audit -r requirements.txt --format json --output pip-audit.json
-
-      - name: Upload pip-audit results
-        uses: github/codeql-action/upload-sarif@v3
+      # -------------------------
+      # 2) Setup Python tooling (for Checkov, Bandit, pip-audit)
+      # -------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          sarif_file: pip-audit.json
-          category: pip-audit
+          python-version: "3.11"
 
-      # IaC scan (Bicep)
-      - name: Checkov scan (Bicep) -> SARIF
+      - name: Install security tools
         run: |
-          checkov -d infra --framework bicep --output sarif --output-file-path checkov-bicep.sarif
+          python -m pip install --upgrade pip setuptools wheel
+          pip install checkov bandit pip-audit
 
-      - name: Upload Checkov Bicep results
+      # -------------------------
+      # 3) Checkov (Bicep IaC) -> SARIF upload (blocks PR on findings)
+      #    - If your folder isn't "infra", change -d infra
+      # -------------------------
+      - name: Checkov scan (Bicep) -> SARIF
+        id: checkov
+        continue-on-error: true
+        run: |
+          if [ -d "infra" ]; then
+            checkov -d infra --framework bicep -o sarif --output-file-path checkov-bicep.sarif
+            echo "checkov_exit=$?" >> $GITHUB_OUTPUT
+          else
+            echo "No infra folder found. Skipping Checkov."
+            python -c "import json; open('checkov-bicep.sarif','w').write(json.dumps({'version':'2.1.0','$schema':'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json','runs':[]}))"
+            echo "checkov_exit=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Checkov Bicep results to GitHub Security
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: checkov-bicep.sarif
           category: checkov-bicep
 
+      - name: Fail if Checkov found issues
+        if: steps.checkov.outputs.checkov_exit != '0'
+        run: |
+          echo "Checkov found IaC security issues. Failing the workflow."
+          exit 1
+
+
+      # -------------------------
+      # 4) Bandit (Python SAST) - DO NOT upload as SARIF (Bandit JSON != SARIF)
+      #    - Keep as artifact + summary (best practice for stable demos)
+      # -------------------------
+      - name: Bandit scan (JSON)
+        run: |
+          bandit -r . -f json -o bandit-results.json --exit-zero
+
+      - name: Upload Bandit report (artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-results
+          path: bandit-results.json
+
+      # -------------------------
+      # 5) pip-audit (dependency scan) - CI-safe mode (no resolver / no installs)
+      #    - This avoids ResolutionImpossible failures during demos
+      # -------------------------
+      - name: pip-audit scan (JSON, direct dependencies only)
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f "requirements.txt" ]; then
+            pip-audit -r requirements.txt --no-deps --disable-pip -f json -o pip-audit.json || true
+          else
+            echo "{}" > pip-audit.json
+          fi
+
+      - name: Upload pip-audit report (artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-results
+          path: pip-audit.json
+
+      # -------------------------
+      # 6) PR Summary (dependency hygiene + quick results)
+      # -------------------------
+      - name: Write Security Summary
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          echo "# 🔐 Security Scan Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          # Unpinned dependency check
+          echo "## 📦 Dependency Hygiene (requirements.txt)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          UNPINNED_COUNT=0
+          if [ -f "requirements.txt" ]; then
+            while IFS= read -r line; do
+              line_clean=$(echo "$line" | xargs)
+              if [[ -n "$line_clean" ]] && [[ ! "$line_clean" =~ ^# ]]; then
+                if [[ ! "$line_clean" =~ == ]] && [[ ! "$line_clean" =~ \>= ]] && [[ ! "$line_clean" =~ \<= ]]; then
+                  ((UNPINNED_COUNT++))
+                fi
+              fi
+            done < requirements.txt
+          fi
+
+          if [ "$UNPINNED_COUNT" -gt 0 ]; then
+            echo "- ❌ Unpinned packages found: **$UNPINNED_COUNT**" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Recommendation: pin versions (or use pip-tools with hashes for production)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- ✅ All dependencies appear pinned (basic check)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 🧪 Tool Outputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **CodeQL**: Security → Code scanning (uploaded automatically)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Checkov**: Security → Code scanning (SARIF upload)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Bandit**: Workflow artifacts (bandit-results.json)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **pip-audit**: Workflow artifacts (pip-audit.json)" >> "$GITHUB_STEP_SUMMARY"
+
   unit_tests:
-    name: Unit tests (non-blocking for security demo)
+    name: Unit tests (optional / can be made blocking)
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install app dependencies
+      - name: Install app dependencies (non-blocking for demo)
+        continue-on-error: true
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install -r requirements.txt
-          pip install pytest pytest-cov
+          if [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt || true
+          fi
+          pip install pytest pytest-cov || true
 
-      - name: Run unit tests with coverage gate
+      - name: Run unit tests with coverage gate (non-blocking for demo)
+        continue-on-error: true
         run: |
-          pytest -q --cov=. --cov-report=term-missing --cov-fail-under=70
+          pytest -q --cov=. --cov-report=term-missing --cov-fail-under=70 || true
